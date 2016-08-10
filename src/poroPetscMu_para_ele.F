@@ -16,10 +16,10 @@
 
       integer maxnd,maxele,maxfc,maxwk,maxsol,maxedg,maxdbc
       integer maxcon,ndim,nnds,nints,ndpn,maxbdnd,maxprocs,csteps
-      parameter (maxnd=100000,maxele=15000,maxfc=10000,
-     &           maxcon=4,maxdbc=600000,maxwk=100,maxsol=40,maxedg=20,
+      parameter (maxnd=150000,maxele=3000,maxfc=1000,
+     &           maxcon=4,maxdbc=500000,maxwk=100,maxsol=40,maxedg=20,
      &           ndim=2,nnds=9,nints=9,ndpn=6,maxbdnd=100,
-     &           maxprocs=1000,csteps=1000)
+     &           maxprocs=100,csteps=1000)
       real*8 node(maxnd,ndim),B(maxele,nnds,nints,ndim)
       real*8 det(maxele,nints),sumsquT,crackloc
       real*8 u(maxnd,ndim),mu(maxnd),NN(nnds,nints)
@@ -76,7 +76,8 @@
       real*8 stretch(maxele,nints),Cf,Cphi,diverged,xx,yy,area_sum
       real*8 BtB(nnds,ndim,ndim),Hphi(maxele,nints),Hphi0(maxele,nints)
       real*8 dHphids(maxele,nints,ndim,ndim),dHphidp(maxele,nints)
-      real*8 val,val2,mass_bal,dHdp(maxele,nints)
+      real*8 val,val2,mass_bal,dHdp(maxele,nints),avgJ(maxele,2)
+      real*8 darcy_exp(2)
       integer nodes,neles,ele(maxele*maxprocs,nnds),nudofs
       integer umpcnd(maxdbc,2),nmudbcs,nwkmu,nconu
       integer nvpdbcs,nwkvp,indices(maxnd*ndpn*ndim)
@@ -108,7 +109,7 @@
       character(1) ou1,ou2,ou3
       logical linesearch,conv1,conv2,convAll,makeau,moduli_on,DtN_on
       logical tc_split_on,scale_visc,eleproc(maxele*maxprocs),artstiff
-      logical true_tstep,div_reset
+      logical true_tstep,div_reset,input_params
 
       integer stat(MPI_STATUS_SIZE)
 
@@ -147,7 +148,7 @@
 
       print*, 'Process ',rank+1,' of ',sizeof,' is active'
       tag=9999
-      diverged=1.d20
+      diverged=1.d6
 
       write(ou1,910)'1'
       write(ou2,910)'2'
@@ -157,6 +158,7 @@
       DtN_on=.true.
       tc_split_on=.true.
       scale_visc=.true.
+      input_params=.true.
 
       if (DtN_on) then
         open(unit=45,file='input/DtN_dofs')
@@ -172,49 +174,81 @@
       endif
 
       xold=-1.d9
-      
-***  e0 is the characteristic strain, e0 = sqrt(Gc / E / l0)
-      e0=0.001d0
+      if (input_params) then
+        if (rank.eq.0) print*
+        open(unit=52,file='input/iparams')
+          read(52,*)
+          read(52,*)e0
+          read(52,*)
+          if (rank.eq.0) print*,'e0: ',e0
+          read(52,*)
+          read(52,*)a0
+          read(52,*)
+          if (rank.eq.0) print*,'a0: ',a0
+          read(52,*)
+          read(52,*)viscosity
+          read(52,*)
+          if (rank.eq.0) print*,'viscosity: ',viscosity
+          read(52,*)
+          read(52,*)kappa
+          read(52,*)
+          if (rank.eq.0) print*,'kappa: ',kappa
+          read(52,*)
+          read(52,*)Cf
+          read(52,*)
+          if (rank.eq.0) print*,'Cf: ',Cf
+          read(52,*)
+          read(52,*)Qrate
+          read(52,*)
+          if (rank.eq.0) print*,'Qrate: ',Qrate
+          read(52,*)
+          read(52,*)delta_t
+          read(52,*)
+          if (rank.eq.0) print*,'delta_t: ',delta_t
+          read(52,*)
+          read(52,*)darcy_exp(1),darcy_exp(2)
+          read(52,*)
+          if (rank.eq.0) print*,'Dexp1: ',darcy_exp(1)
+          if (rank.eq.0) print*,'Dexp2: ',darcy_exp(2)
+          read(52,*)
+          read(52,*)open_thresh
+          if (rank.eq.0) print*,'open_thresh: ',open_thresh
+        close(unit=52)
+        if (rank.eq.0) print*
+      else
 
-***  a0=-2.d0 for quadratic, -1.d-5 for cubic, >0.d0 for bell curve
-      a0=-1.d-5
+!       e0 is the characteristic strain, e0 = sqrt(Gc / E / l0)
+        e0=0.001d0
 
-*** Normalized elastic properties for v = 0.25
-      c11=1.2d0
-      c13=0.4d0
-      c33=1.2d0
-      c44=0.4d0
+!       a0=-2.d0 for quadratic, -1.d-5 for cubic, >0.d0 for bell curve
+        a0=0.d0
+        
+!       Normalized by sigma_0
+        viscosity=1.d-10*1.d0
+        
+!       Normalized by (l_0)^2
+        kappa=1.d-12
 
-!      c11=1.0d0
-!      c13=0.0d0
-!      c33=1.0d0
-!      c44=0.5d0
+!       Fluid Compressibilty sigma_0/Kf
+        Cf=0.01364d0*0.d0
 
-      Cstiff(1)=c11
-      Cstiff(2)=c33      
-      Cstiff(3)=c13
-      Cstiff(4)=c44
-      
-!     Normalized by sigma_0
-      viscosity=1.d-10*1.d0
-      
-!     Normalized by (l_0)^2
-      kappa=1.d-13
+        Qrate=1.d3*1.d0
+        delta_t=1.d-4
 
-!     Fluid Compressibilty sigma_0/Kf
-      Cf=0.01364d0*0.d0
+!       Exponents for the Darcy damage function
+        darcy_exp(1)=4.d0
+        darcy_exp(2)=1.d0
 
-      Qrate=1.d-1*1.d0
-      delta_t=1.0d0
+!       open_thresh = crit_stretch - 1
+        open_thresh=0.002d0
+
+      endif
       
       if (scale_visc) then
-!       Permeability constant (1 over small number from paper)
-        kperm=1.d3
-!       open_thresh = crit_stretch - 1
-        open_thresh=1.d0/((1.d0+1.d0/(kappa*kperm))**(1.d0/3.d0)-1.d0)
+        kperm=((open_thresh/(1.d0+open_thresh))**3.d0)/kappa
       else
+        open_thresh=1.d0/((1.d0/(kappa*1.d6))**(1.d0/3.d0)-1.d0)
         kperm=1.d6
-        open_thresh=1.d0/((1.d0+1.d0/(kappa*kperm))**(1.d0/3.d0)-1.d0)
       endif
 
       if (rank.eq.0) then
@@ -233,7 +267,7 @@
 !     Normalizer for v
       w0=(kperm*kappa)/viscosity
 
-      if (rank.eq.0) print*,open_thresh,kperm,w0
+!      if (rank.eq.0) print*,open_thresh,kperm,w0
       
       mu0=1.d0
 
@@ -243,7 +277,7 @@
       
       icont=1
 
-      pgauge(1)=-20.25d0
+      pgauge(1)=0.0d0
       pgauge(2)=0.0d0
 
       call readinp(ndim,nnds,ndpn,maxnd,maxele,maxfc,maxdbc,
@@ -566,12 +600,12 @@
 
       call gradm(nnds,nints,ndim,maxele,maxnd,local_eles,ele,B,
      &             NN,muint,gradmu,mu,dt,muavg,dmuint,g_ele,
-     &             maxprocs)
+     &             maxprocs,det)
 
       call gradu(ndim,nnds,nints,maxele,maxnd,local_eles,ele,
      &               B,NN,strn,u,Jacob,Finv,dJacob,dstrn,e0,dt,uint,
      &               duint,FiJ,muint,phi,open_thresh,g_ele,maxprocs,
-     &               maxJ)
+     &               maxJ,avgJ,det)
 
       call nodalstress(ndim,maxnd,maxele,nints,nnds,nodes,neles,
      &                     ele,gradp,gradmu,strn,strs,ngradp,ngradmu,
@@ -589,6 +623,7 @@
 ! 22   continue
 
       do 732 i=1,local_eles
+        avgJ(i,2)=avgJ(i,1)
         do 733 j=1,nints
           Hpsi0(i,j)=Hpsi(i,j)
           Jacob(i,j,2)=Jacob(i,j,1)
@@ -614,7 +649,7 @@
      &                    tc_split_on,muavg,kperm,Wp,uint,Wmu,Ws,
      &                    dmuint,fluidsource,rank,open_thresh,
      &                    gmuint,scale_visc,stretch,maxprocs,Cf,
-     &                    p0,maxJ,dHdp)
+     &                    p0,maxJ,avgJ,dHdp,darcy_exp)
 
       do 30 i=1,nodes*ndpn
         indices(i)=i-1
@@ -639,11 +674,11 @@
       t=0.0d0
       stepone=1
 
-!      if (rank.eq.0) then
-!        open(unit=50,file='results1/crack_vs_time')
-!        write(50,*),'t crack_length pressure opening'
-!        close(unit=50)
-!      endif
+      if (rank.eq.0) then
+        open(unit=50,file='results1/crack_vs_time')
+        write(50,*),'t crack_length pressure opening'
+        close(unit=50)
+      endif
 
 !      open(unit=50,file='results1/consolidation')
 !      write(50,*),'t displacement pressure(right_side)'
@@ -651,13 +686,13 @@
 !      open(unit=50,file='results1/pressure')
 !      write(50,*),'time pressure'
 
-      open(unit=50,file='results1/flux')
+!      open(unit=50,file='results1/flux')
 
       open(unit=24,file='input/crackloc')
       read(24,*) crackloc
       close(unit=24)
      
-      do 777 ibcs=0,200
+      do 777 ibcs=0,1000
 
         if (rank.eq.0) then
         print*
@@ -668,26 +703,26 @@
 
         if (ibcs.le.0) then
           muapp=1.0d0
-          papp=0.d0+p0+0.d0*(0.9d0+1.d-2*dble(ibcs))
+          papp=0.d0+0.d0*(0.9d0+1.d-2*dble(ibcs))
      &         /dsqrt(crackloc*dacos(-1.d0)*(1.d0-1.d0*0.25d0*0.25d0))
           uapp=0.d0
           vapp=0.d0
           makeau=.true.
           true_tstep=.true.
           timerule=1.0d0
-        elseif (ibcs.le.0) then
+        elseif (ibcs.le.2) then
           muapp=1.0d0
           papp=0.d0+p0
-          uapp=1.d-3*dble(ibcs)
-          vapp=Qrate*0.d-4
+          uapp=0.d-3*dble(ibcs)
+          vapp=Qrate*10.d0**(dble(ibcs-3))
           makeau=.true.
           true_tstep=.true.
           timerule=1.d0
         elseif (ibcs.le.1000) then 
           muapp=1.0d0
           papp=0.d0+p0
-          uapp=0.d-5*2.d0**dble(ibcs-0)
-          vapp=Qrate*1.d0
+          uapp=0.d-3*2.d0**dble(ibcs-3)
+          vapp=Qrate
           makeau=.true.
           true_tstep=.true.
           timerule=1.d0
@@ -706,8 +741,8 @@
 
         if (ibcs.le.0) then
           dt=1.d30
-        elseif (ibcs.le.0) then
-          dt=delta_t*2.d4
+        elseif (ibcs.le.2) then
+          dt=delta_t*1.d1**dble(3-ibcs)
         elseif (ibcs.le.1000) then
           dt=2.d0**(dble(ibcs)*0.15d0+1.d0)
      &       -2.d0**(dble(ibcs-1)*0.15d0+1.d0)
@@ -775,6 +810,7 @@
           if (true_tstep) then
           if (.not.div_reset) then
             do 722 i=1,local_eles
+              avgJ(i,2)=avgJ(i,1)
               do 723 j=1,nints
                 Hpsi0(i,j)=Hpsi(i,j)
                 Jacob(i,j,2)=Jacob(i,j,1)
@@ -837,7 +873,7 @@
      
           call gradm(nnds,nints,ndim,maxele,maxnd,local_eles,ele,B,
      &              NN,muint,gradmu,mu,dt,muavg,dmuint,g_ele,
-     &              maxprocs)
+     &              maxprocs,det)
 
           call calcu(ndim,ndpn,maxnd,maxdbc,nodes,nudofs,nconu,
      &             gconu,dbcval,drhs,u,umpc,nudbcs,dbcnd,dbcdof,
@@ -846,7 +882,7 @@
           call gradu(ndim,nnds,nints,maxele,maxnd,local_eles,ele,
      &               B,NN,strn,u,Jacob,Finv,dJacob,dstrn,e0,dt,uint,
      &               duint,FiJ,muint,phi,open_thresh,g_ele,maxprocs,
-     &               maxJ)
+     &               maxJ,avgJ,det)
 
           call nodalstress(ndim,maxnd,maxele,nints,nnds,nodes,neles,
      &                     ele,gradp,gradmu,strn,strs,ngradp,ngradmu,
@@ -861,6 +897,7 @@
             if (dabs(node(i,1)-pgauge(1)).lt.1.d-4) then
             if (dabs(node(i,2)-pgauge(2)).lt.1.d-4) then
               print*,'|        PRESSURE GAUGE: ',p(i)
+              print*,'|                    Dt: ',dt
             endif
             endif
  602      continue
@@ -879,7 +916,7 @@
           endif
           solsteps=200
 
-          if (ibcs.ge.0) then
+          if (ibcs.ne.-1) then
             conv1=.true.
             conv2=.true.
           else
@@ -994,7 +1031,7 @@
      &                    tc_split_on,muavg,kperm,Wp,uint,Wmu,Ws,
      &                    dmuint,fluidsource,rank,open_thresh,
      &                    gmuint,scale_visc,stretch,maxprocs,Cf,
-     &                    p0,maxJ,dHdp)
+     &                    p0,maxJ,avgJ,dHdp,darcy_exp)
 
             call intfvp(nnds,nints,ndim,ndpn,maxnd,nodes,maxele,
      &                  ele,gconvp,det,B,NN,bv,bp,tau,fint,dt,muint,
@@ -1136,12 +1173,12 @@
      &          nudofs,nudbcs,muint,Jacob,Finv,Imperm,w0,
      &          gradv,pint,tau,PetA,e0,dstrn,bsf,vint,strn,
      &          Hpsi,dJacob,dphi,phi,beta,a0,isu,isvp,ismu,
-     &          PetR,PetdU,ksp,nodes,indices,gradp,dHdp,
+     &          PetR,PetdU,ksp,nodes,indices,gradp,dHdp,avgJ,
      &          visc_eff,dHds,local_eles,p0,Cf,fluidsource,
      &          biot,phi0,freestrain,YM,poisson,KDtN,maxbdnd,
      &          DtNdofs,DtNidx,tc_split_on,muavg,open_thresh,
      &          kperm,rank,eleproc,ndpn,artstiff,dmuint,timerule,
-     &          gmuint,stretch,g_ele,maxprocs)
+     &          gmuint,stretch,g_ele,maxprocs,darcy_exp)
 
               else
 
@@ -1151,12 +1188,12 @@
      &          nudofs,nudbcs,muint,Jacob,Finv,Imperm,w0,
      &          gradv,pint,tau,PetAmu,e0,dstrn,bsf,vint,strn,
      &          Hpsi,dJacob,dphi,phi,beta,a0,isu,isvp,ismu,
-     &          PetR,PetdU,ksp,nodes,indices,gradp,dHdp,
+     &          PetR,PetdU,ksp,nodes,indices,gradp,dHdp,avgJ,
      &          visc_eff,dHds,local_eles,p0,Cf,fluidsource,
      &          biot,phi0,freestrain,YM,poisson,KDtN,maxbdnd,
      &          DtNdofs,DtNidx,tc_split_on,muavg,open_thresh,
      &          kperm,rank,eleproc,ndpn,.false.,dmuint,timerule,
-     &          gmuint,stretch,g_ele,maxprocs)
+     &          gmuint,stretch,g_ele,maxprocs,darcy_exp)
 
               endif
             else
@@ -1167,12 +1204,12 @@
      &          nudofs,nudbcs,muint,Jacob,Finv,Imperm,w0,
      &          gradv,pint,tau,PetAvpu,e0,dstrn,bsf,vint,strn,
      &          Hpsi,dJacob,dphi,phi,beta,a0,isu,isvp,ismu,
-     &          PetR,PetdU,ksp,nodes,indices,gradp,dHdp,
+     &          PetR,PetdU,ksp,nodes,indices,gradp,dHdp,avgJ,
      &          visc_eff,dHds,local_eles,p0,Cf,fluidsource,
      &          biot,phi0,freestrain,YM,poisson,KDtN,maxbdnd,
      &          DtNdofs,DtNidx,tc_split_on,muavg,open_thresh,
      &          kperm,rank,eleproc,ndpn,.false.,dmuint,timerule,
-     &          gmuint,stretch,g_ele,maxprocs)
+     &          gmuint,stretch,g_ele,maxprocs,darcy_exp)
 
             endif
 
@@ -1270,7 +1307,7 @@
                 
             call gradm(nnds,nints,ndim,maxele,maxnd,local_eles,ele,B,
      &                 NN,muint,gradmu,mu,dt,muavg,dmuint,g_ele,
-     &                 maxprocs)
+     &                 maxprocs,det)
 
             do 552 i=1,nodes
               do 553 j=1,ndim
@@ -1287,7 +1324,7 @@
             call gradu(ndim,nnds,nints,maxele,maxnd,local_eles,ele,
      &               B,NN,strn,u,Jacob,Finv,dJacob,dstrn,e0,dt,uint,
      &               duint,FiJ,muint,phi,open_thresh,g_ele,maxprocs,
-     &               maxJ)
+     &               maxJ,avgJ,det)
 
             call nodalstress(ndim,maxnd,maxele,nints,nnds,nodes,neles,
      &                     ele,gradp,gradmu,strn,strs,ngradp,ngradmu,
@@ -1383,7 +1420,6 @@
                 if (tt.ge.t) then
                   goto 901
                 else
-                  div_reset=.false.
                   goto 902
                 endif
               endif
@@ -1393,7 +1429,6 @@
                 if (tt.ge.t) then
                   goto 901
                 else
-                  div_reset=.false.
                   goto 902
                 endif
               endif
@@ -1408,14 +1443,27 @@
               
               if (convall) then
                 if (tt.ge.t) then
-                  tt=tt-dt
-                  dt=dt*0.5d0
-                  t_resets=t_resets+1
-                  div_reset=.true.
-                  goto 903
+                  if (sumsqf_n.lt.1.d-3.and.
+     &                sumsqu_n.lt.1.d-3) then
+                    goto 901
+                  else
+                    tt=tt-dt
+                    dt=dt*0.5d0
+                    t_resets=t_resets+1
+                    div_reset=.true.
+                    goto 903
+                  endif
                 else
-                  div_reset=.false.
-                  goto 902
+                  if (sumsqf_n.lt.1.d-2.and.
+     &                sumsqu_n.lt.1.d-2) then
+                    goto 902
+                  else
+                    tt=tt-dt
+                    dt=dt*0.5d0
+                    t_resets=t_resets+1
+                    div_reset=.true.
+                    goto 903
+                  endif
                 endif
               endif
               goto 111
@@ -1438,7 +1486,7 @@
               goto 999
             endif
 
-            if (1.eq.0.and.rank.eq.0) then             
+            if (ibcs.eq.-1.and.rank.eq.0) then             
             call paraview(ii,ou3,maxnd,maxele,ndim,nodes,neles,nnds,
      &                  node,ele,u,mu,v,p,ngradp,nstrn,nstrs,e0,
      &                  ngradmu,nints,NN,phi,w0,maxprocs)
@@ -1465,11 +1513,15 @@
  100      continue
  902      continue
 
-          if (control.gt.0.and.rank.eq.0) then
-          call paraview(control,ou2,maxnd,maxele,ndim,nodes,neles,
-     &                  nnds,node,ele,u,mu,v,p,ngradp,nstrn,nstrs,e0,
-     &                  ngradmu,nints,NN,phi,w0,maxprocs)
-          endif
+          dt=t-tt
+          t_resets=0
+          div_reset=.false.
+
+!          if (control.gt.0.and.rank.eq.0) then
+!          call paraview(control,ou2,maxnd,maxele,ndim,nodes,neles,
+!     &                  nnds,node,ele,u,mu,v,p,ngradp,nstrn,nstrs,e0,
+!     &                  ngradmu,nints,NN,phi,w0,maxprocs)
+!          endif
 
           do 921 i=1,nodes
             u_temp(i,1)=u(i,1)
@@ -1497,18 +1549,18 @@
      &                    tc_split_on,muavg,kperm,Wp,uint,Wmu,Ws,
      &                    dmuint,fluidsource,rank,open_thresh,
      &                    gmuint,scale_visc,stretch,maxprocs,Cf,
-     &                    p0,maxJ,dHdp)
+     &                    p0,maxJ,avgJ,dHdp,darcy_exp)
 
-        Wp_total=0.d0
-        Wmu_total=0.d0
-        Ws_total=0.d0
-        vflux=0.d0
-        val=0.d0
-        val2=0.d0
-!        print*,' xx yy stretch(i,j) gmuint(i,j,1) gmuint(i,j,2)', 
-!     &         ' gradmu(i,j,1) gradmu(i,j,2) Jacob(i,j,1)', 
-!     &         ' FiJ(i,j,1,1) FiJ(i,j,1,2) FiJ(i,j,2,1) FiJ(i,j,2,2)'
-        mass_bal=0.d0
+!        Wp_total=0.d0
+!        Wmu_total=0.d0
+!        Ws_total=0.d0
+!        vflux=0.d0
+!        val=0.d0
+!        val2=0.d0
+!!        print*,' xx yy stretch(i,j) gmuint(i,j,1) gmuint(i,j,2)', 
+!!     &         ' gradmu(i,j,1) gradmu(i,j,2) Jacob(i,j,1)', 
+!!     &         ' FiJ(i,j,1,1) FiJ(i,j,1,2) FiJ(i,j,2,1) FiJ(i,j,2,2)'
+!        mass_bal=0.d0
         do 140 i=1,local_eles
           area_sum=0.d0
           do 142 j=1,nnds
@@ -1556,12 +1608,12 @@
 !          if (dabs(val).gt.1.d-15) print*,node(ele(i,4),1),val,val2
 !          print*,Jacob(i,5,1),maxJ(i)
  140    continue
-!        print*,'MASS: ',mass_bal
-
-        if (rank.eq.0) print*,'|  Wp = ',Wp_total
-        if (rank.eq.0) print*,'|  Wmu = ',Wmu_total
-        if (rank.eq.0) print*,'|  2 Ws = ',2.d0*Ws_total
-        if (rank.eq.0) print*,'|  Q = ',vflux/(2.d0)*w0
+!!        print*,'MASS: ',mass_bal
+!
+!        if (rank.eq.0) print*,'|  Wp = ',Wp_total
+!        if (rank.eq.0) print*,'|  Wmu = ',Wmu_total
+!        if (rank.eq.0) print*,'|  2 Ws = ',2.d0*Ws_total
+!        if (rank.eq.0) print*,'|  Q = ',vflux/(2.d0)*w0
 
 !        call LsqGrads(nints,ndim,ndpn,nnds,maxnd,maxdbc,maxcon,
 !     &              nodes,maxele,nvpdofs,nudofs,nmudofs,nvpdbcs,
@@ -1613,24 +1665,37 @@
         
        
 !        if (rank.eq.0) write(50,*),t,e0*u(5002,1),p(5003)
-!        if (rank.eq.0) write(50,*),t,p(39284)
-
-!        call findcrack(ndim,maxnd,node,mu,xcrack,nodes)
+ 
 !        if (rank.eq.0) then
-!          print*,'|  ~Crack: ',xcrack
-!          open(unit=50,file='results1/crack_vs_time',access='append')
-!          write(50,*),t,xcrack,p(1),(u(3,1)-u(2,1))*e0
-!          close(unit=50)
+!        do 603 i=1,nodes
+!          if (dabs(node(i,1)-pgauge(1)).lt.1.d-4) then
+!          if (dabs(node(i,2)-pgauge(2)).lt.1.d-4) then
+!            print*,'|        PRESSURE GAUGE: ',p(i)
+!            print*,'|                    Dt: ',dt
+!            write(50,*),t,p(i)
+!          endif
+!          endif
+! 603    continue
 !        endif
 
-        if (rank.eq.0) write(50,*),uapp,vflux/(10.d0)*w0+0.d0*kappa
-     &                            ,val/10.d0*w0
+        call findcrack(ndim,maxnd,node,mu,xcrack,nodes)
+        if (rank.eq.0) then
+          print*,'|  ~Crack: ',xcrack
+          open(unit=50,file='results1/crack_vs_time',access='append')
+          write(50,*),t-1.1d-2+2.d-4,xcrack,p(1),(u(3,1)-u(2,1))*e0
+          close(unit=50)
+        endif
+
+!        if (rank.eq.0) write(50,*),uapp,vflux/(10.d0)*w0+0.d0*kappa
+!     &                            ,val/10.d0*w0
+
+!        if (rank.eq.0) write(50,*),t,e0*u(5998,1),p(5999)
 
  777  continue
 
  999  continue
 
-!      close(unit=50)
+      close(unit=50)
 
  910  format(A)
 
@@ -2853,7 +2918,7 @@
       subroutine gradu(ndim,nnds,nints,maxele,maxnd,local_eles,ele,
      &                 B,NN,strn,u,Jacob,Finv,dJacob,dstrn,e0,dt,uint,
      &                 duint,FiJ,muint,phi,open_thresh,g_ele,maxprocs,
-     &                 maxJ)
+     &                 maxJ,avgJ,det)
       implicit none
       real*8 strn(maxele,nints,ndim,ndim,2),dt,NN(nnds,nints)
       real*8 dstrn(maxele,nints,ndim,ndim),maxJ(maxele)
@@ -2863,10 +2928,9 @@
       real*8 uint(maxele,nints,ndim),duint(maxele,nints,ndim)
       real*8 FiJ(maxele,nints,ndim,ndim),muint(maxele,nints,2)
       real*8 delta(ndim,ndim),isalt,phi(maxele,nints,2)
-      real*8 h0,open_thresh
+      real*8 h0,open_thresh,avgJ(maxele,2),det(maxele,nints),area
       integer maxele,maxnd,local_eles,ele(maxele*maxprocs,nnds)
       integer i,j,k,m,ndim,nnds,nints,maxprocs,g_ele(maxele),ii,jj
-      integer Sint
 
 
       h0=open_thresh
@@ -2881,7 +2945,6 @@
       do 100 m=1,local_eles
         
         maxJ(m)=0.d0
-        Sint=5
 
         do 110 j=1,nints
 
@@ -2903,14 +2966,11 @@
  201        continue
  200      continue
 
-          if (strn(m,j,1,1,1)+strn(m,j,2,2,1).gt.maxJ(m)) then
-            maxJ(m)=strn(m,j,1,1,1)+strn(m,j,2,2,1)
-            Sint=j
-          endif
-
  110    continue
 
         maxJ(m)=0.d0
+        avgJ(m,1)=0.d0
+        area=0.d0
         do 210 j=1,nints
 
           do 250 i=1,ndim
@@ -2924,12 +2984,9 @@
           Jacob(m,j,1)=FiJ(m,j,1,1)*FiJ(m,j,2,2)
      &              -FiJ(m,j,1,2)*FiJ(m,j,2,1)
 
-          if (Jacob(m,j,1).gt.maxJ(m)) maxJ(m)=Jacob(m,j,1)
-!          maxJ(m)=maxJ(m)+Jacob(m,j,1)
-          if (Jacob(m,j,1).lt.1.d-15) then
-!            print*,'Negative Jacobian: ',m,j
-!            stop
-          endif
+!          if (Jacob(m,j,1).lt.1.d-15) then
+!            print*,'|      !!! Negative Jacobian: ',m,j
+!          endif
           Finv(m,j,1,1,1)=FiJ(m,j,2,2)/Jacob(m,j,1)
           Finv(m,j,1,2,1)=-FiJ(m,j,1,2)/Jacob(m,j,1)
           Finv(m,j,2,1,1)=-FiJ(m,j,2,1)/Jacob(m,j,1)
@@ -2937,9 +2994,15 @@
 
           dJacob(m,j)=(Jacob(m,j,1)-Jacob(m,j,2))/dt
 
+          if (Jacob(m,j,1).gt.maxJ(m)) maxJ(m)=Jacob(m,j,1)
+          avgJ(m,1)=avgJ(m,1)+Jacob(m,j,1)*det(m,j)
+          area=area+det(m,j)
+!          maxJ(m)=maxJ(m)+Jacob(m,j,1)
+
  210    continue
 
-        maxJ(m)=maxJ(m)*0.3d0+Jacob(m,5,1)*0.7d0
+        avgJ(m,1)=avgJ(m,1)/area
+        maxJ(m)=maxJ(m)*0.3d0+avgJ(m,1)*0.7d0
 
  100  continue
 
@@ -2951,12 +3014,12 @@
       
       subroutine gradm(nnds,nints,ndim,maxele,maxnd,local_eles,
      &                 ele,B,NN,muint,gradmu,mu,dt,muavg,dmuint,
-     &                 g_ele,maxprocs)
+     &                 g_ele,maxprocs,det)
       implicit none
       real*8 muint(maxele,nints,2),mu(maxnd)
-      real*8 gradmu(maxele,nints,ndim)
+      real*8 gradmu(maxele,nints,ndim),det(maxele,nints)
       real*8 B(maxele,nnds,nints,ndim),NN(nnds,nints)
-      real*8 dt,muavg(maxele),dmuint(maxele,nints)
+      real*8 dt,muavg(maxele),dmuint(maxele,nints),area
       integer maxele,maxnd,local_eles,ele(maxele*maxprocs,nnds)
       integer i,j,k,m,nnds,nints,ndim,maxprocs,g_ele(maxele),ii
 
@@ -2964,6 +3027,7 @@
       do 100 m=1,local_eles
         
         muavg(m)=0.d0
+        area=0.d0
         do 110 j=1,nints
 
           do 165 i=1,ndim
@@ -2979,13 +3043,14 @@
  201        continue
             muint(m,j,1)=muint(m,j,1)+NN(i,j)*mu(k)
  200      continue
-          muavg(m)=muavg(m)+muint(m,j,1)
+          muavg(m)=muavg(m)+muint(m,j,1)*det(m,j)
+          area=area+det(m,j)
 
           dmuint(m,j)=(muint(m,j,1)-muint(m,j,2))/dt
 
  110    continue
 
-        muavg(m)=muavg(m)/nints
+        muavg(m)=muavg(m)/area
  100  continue
 
 
@@ -3085,7 +3150,7 @@
      &                    tc_split_on,muavg,kperm,Wp,uint,Wmu,Ws,
      &                    dmuint,fluidsource,rank,open_thresh,
      &                    gmuint,scale_visc,stretch,maxprocs,Cf,
-     &                    p0,maxJ,dHdp)
+     &                    p0,maxJ,avgJ,dHdp,darcy_exp)
       implicit none
       real*8 strn(maxele,nints,ndim,ndim,2),e0
       real*8 gradv(maxele,nints,ndim,ndim,2),bsf(maxele,nints,ndim)
@@ -3109,7 +3174,7 @@
       real*8 Hpsi0(maxele,nints),Bc,phicrack,phibiot,dphidstrain
       real*8 biot(maxele),phi0(maxele),dphibiot
       real*8 freestrain(maxele),YM(maxele)
-      real*8 poisson(maxele),dt,dkkplus
+      real*8 poisson(maxele),dt,dkkplus,avgJ(maxele,2)
       real*8 aexp,bexp,phiF(2),darcyF,muavg(maxele),kperm,phieff(2)
       real*8 Wp(maxele,nints),uint(maxele,nints,ndim),DphiF(2)
       real*8 Wmu(maxele,nints),Ws(maxele,nints),dmuint(maxele,nints)
@@ -3117,8 +3182,9 @@
       real*8 gmuint(maxele,nints,ndim),p0,dHdp(maxele,nints)
       real*8 HeavisideJ1,HeavisideJ2,istr,maxJ(maxele)
       real*8 stretch(maxele,nints),Cf,fdensity(2),gfdensity(ndim)
-      real*8 s_numerator,s_denominator,open_thresh,dHJ1
-      real*8 crit_stretch,Fstretch,Fstretch_norm
+      real*8 s_numerator,s_denominator,open_thresh
+      real*8 crit_stretch,Fstretch,Fstretch_norm,mHeavisideJ1
+      real*8 darcy_exp(2)
       integer maxele,local_eles,nints,ndim,isol,H_total
       integer m,l,i,j,k,n,q,rank,maxprocs,g_ele(maxele)
       logical tc_split_on,scale_visc
@@ -3153,14 +3219,8 @@
           c44=YM(m)
      &        /(2.d0*(1.d0+poisson(m)))
           
-          if (dabs(biot(m)-1.d0).lt.1.d-15) then
-            Cphi=1.d20
-          elseif (dabs(biot(m)-phi0(m)).lt.1.d-15) then
-            Cphi=1.d20
-          else 
-            Cphi=(YM(m)/(e0*3.d0*(1.d0-2.d0*poisson(m))))
-     &           /((biot(m)-phi0(m))*(1.d0-biot(m)))
-          endif
+          Cphi=(biot(m)-phi0(m))*(1.d0-biot(m))
+     &         *(3.d0*(1.d0-2.d0*poisson(m)))/(YM(m))
 
           s_numerator=0.d0
           s_denominator=0.d0
@@ -3180,6 +3240,8 @@
           endif
           stretch(m,l)=maxJ(m)*1.d0+Jacob(m,l,1)*0.d0
           crit_stretch=1.d0+open_thresh
+
+          if (fluidsource(m).gt.1.d-6.and.l.eq.1) print*,maxJ(m)-1.d0 
           
           if (.not.scale_visc) then
             Fstretch=1.d0
@@ -3194,7 +3256,7 @@
             Fstretch=(stretch(m,l)/(stretch(m,l)-1.d0))**(3.d0)
           endif
           Fstretch_norm=(crit_stretch/(crit_stretch-1.d0))**(3.d0)
-!         Fstretch_norm turns out to be 1 + 1/(kperm*kappa) such that
+!         Fstretch_norm turns out to be 1/(kperm*kappa) such that
 !          the flow equation is normalized w0
  
           mu=muint(m,l,1)
@@ -3217,21 +3279,22 @@
           DphiF(2)=-6.d0*muint(m,l,2)*(1.d0-muint(m,l,2))
 
 !         Darcy degradation function
-          aexp=4.d0
-          bexp=4.d0
+          aexp=darcy_exp(1)
+          bexp=darcy_exp(2)
           darcyF=(1.d0-muavg(m)**aexp)**bexp+0.d-6
 !          darcyF=(1.d0-mu**aexp)**bexp+0.d-6
 
 !         Heaviside function for J
           if (Jacob(m,l,1).ge.1.d0) then
             HeavisideJ1=1.d0
-            H_total=H_total+1
+            H_total=H_total+10
+            if (p.lt.0.d0) HeavisideJ1=0.d0
           else
             HeavisideJ1=1.d0
             if (tc_split_on) HeavisideJ1=0.d0
+            mHeavisideJ1=0.d0
             if (fluidsource(m).gt.1.d-6) HeavisideJ1=1.d0
           endif
-          dHJ1=0.d0
 
           if (Jacob(m,l,2).ge.1.d0) then
             HeavisideJ2=1.d0
@@ -3241,7 +3304,7 @@
             if (fluidsource(m).gt.1.d-6) HeavisideJ2=1.d0
           endif
 
-          visc_eff(m,l)=Fstretch/(Fstretch_norm-1.d0)
+          visc_eff(m,l)=Fstretch/Fstretch_norm
 
           vkk=0.d0
           ekk=0.d0
@@ -3267,19 +3330,24 @@
             gfdensity(I)=Cf*gradp(m,l,I)
  240      continue
 
+!          if (p.lt.0.d0) then
+!            fdensity(1)=exp(Cf*p-1.d0*p*p)
+!            do 243 i=1,ndim
+!              gfdensity(I)=fdensity(1)*(Cf-2.d0*1.d0*p)*gradp(m,l,I)
+! 243        continue
+!          endif
+!          if (pint(m,l,2).lt.0.d0) 
+!     &      fdensity(2)=exp(Cf*pint(m,l,2)-1.d0*pint(m,l,2)**2.d0)
+
+!          if (fdensity(1).lt.0.d0) print*,'Negative Density ele: ',m
+
           phicrack=1.0d0
-          phibiot=phi0(m)/Jacob(m,l,1)
-     &    +(biot(m)*(Jacob(m,l,1)-1.d0)+(p-p0)/Cphi)
-     &     *(1.d0-phiF(1)*HeavisideJ1)
-     &     /(Jacob(m,l,1)-phiF(1)*HeavisideJ1*(Jacob(m,l,1)-1.d0))
+          phibiot=phi0(m)
+     &    +(biot(m)+(1.d0-biot(m))*phiF(1))*(Jacob(m,l,1)-1.d0)
+     &    +(1.d0-phiF(1))*(p-p0)*Cphi*e0
+          if (phibiot.lt.0.d0) phibiot=0.d0
 
-          phi(m,l,1)=phibiot
-
-          phieff(1)=phi(m,l,1)+phiF(1)*(1.d0-phi(m,l,1))
-     &                *((Jacob(m,l,1)-1.d0)*HeavisideJ1)/Jacob(m,l,1)
-
-          phieff(2)=phi(m,l,2)+phiF(2)*(1.d0-phi(m,l,2))
-     &                *((Jacob(m,l,2)-1.d0)*HeavisideJ2)/Jacob(m,l,2)
+          phi(m,l,1)=phibiot/Jacob(m,l,1)
            
           dphi(m,l)=(phi(m,l,1)-phi(m,l,2))/dt
 
@@ -3380,12 +3448,10 @@
           if (.not.tc_split_on) then
 
           strs(m,l,1,1)=(c13*ekk+2.d0*c44*strn(m,l,1,1,1))*factor
-     &      -p*((1.d0-phiF(1)*HeavisideJ1)*biot(m)
-     &          +phiF(1)*HeavisideJ1)
+     &      -max(p,0.d0)*(biot(m)+(1.d0-biot(m))*phiF(1))
 
           strs(m,l,2,2)=(c13*ekk+2.d0*c44*strn(m,l,2,2,1))*factor
-     &      -p*((1.d0-phiF(1)*HeavisideJ1)*biot(m)
-     &          +phiF(1)*HeavisideJ1) 
+     &      -max(p,0.d0)*(biot(m)+(1.d0-biot(m))*phiF(1)) 
 
           strs(m,l,1,2)=(c44*(strn(m,l,1,2,1)+strn(m,l,2,1,1)))*factor
           strs(m,l,2,1)=strs(m,l,1,2)
@@ -3394,13 +3460,11 @@
 
           strs(m,l,1,1)=(c13*ekkplus+2.d0*c44*strnplus(1,1))*factor
      &      +(c13*ekkminus+2.d0*c44*strnminus(1,1))
-     &      -p*((1.d0-phiF(1)*HeavisideJ1)*biot(m)
-     &          +phiF(1)*HeavisideJ1)
+     &      -max(p,0.d0)*(biot(m)+(1.d0-biot(m))*phiF(1))
 
           strs(m,l,2,2)=(c13*ekkplus+2.d0*c44*strnplus(2,2))*factor
      &      +(c13*ekkminus+2.d0*c44*strnminus(2,2))
-     &      -p*((1.d0-phiF(1)*HeavisideJ1)*biot(m)
-     &          +phiF(1)*HeavisideJ1)
+     &      -max(p,0.d0)*(biot(m)+(1.d0-biot(m))*phiF(1))
 
           strs(m,l,1,2)=(c44*(strnplus(1,2)+strnplus(2,1)))*factor
      &                 +(c44*(strnminus(1,2)+strnminus(2,1)))
@@ -3410,7 +3474,7 @@
           
           do 210 i=1,ndim
             do 220 j=1,ndim
-              tau(m,l,i,j)=(1.d0-mu)**2.d0*visc_eff(m,l)
+              tau(m,l,i,j)=(1.d0-1.d0*mu)**2.d0*visc_eff(m,l)
      &                     *(vbar(i,j)+vbar(j,i))-p*delta(i,j)*1.d0
  220        continue
  210      continue
@@ -3423,18 +3487,18 @@
 !     &             -phiF(2)*(1.d0-phi(m,l,2))
 !     &             *(dmax1(Jacob(m,l,2)-1.d0,0.d0)))/dt
 
-          bphiJ(m,l)=-(phieff(1)*Jacob(m,l,1)*fdensity(1)
-     &                -phieff(2)*Jacob(m,l,2)*fdensity(2))/dt
+          bphiJ(m,l)=-(phi(m,l,1)*Jacob(m,l,1)*fdensity(1)
+     &                -phi(m,l,2)*Jacob(m,l,2)*fdensity(2))/dt
 
-          bphiJ(m,l)=bphiJ(m,l)/(w0*fdensity(1))
+          bphiJ(m,l)=bphiJ(m,l)/(w0)
 
           bv(m,l)=0.d0
           do 241 i=1,ndim
-            bsf(m,l,i)=-(vint(m,l,i))*(1.d0-darcyF)
-     &                 *Imperm(m,i,i)*kperm
+            bsf(m,l,i)=-(vint(m,l,i))*(1.d0-1.d0*darcyF)
+     &                 *Imperm(m,i,i)*(kperm)!**muavg(m)-1.d0)
             do 242 j=1,ndim
               bv(m,l)=bv(m,l)
-     &        -(gfdensity(I)*vint(m,l,j)/fdensity(1)+gradv(m,l,j,I,1))
+     &        -(gfdensity(I)*vint(m,l,j)+gradv(m,l,j,I,1))
      &         *Jacob(m,l,1)*Finv(m,l,I,j,1)
 
               bsf(m,l,i)=bsf(m,l,i)
@@ -3448,7 +3512,6 @@
      &              (strn(m,l,1,1,1)*strn(m,l,1,1,1))+
      &              (strn(m,l,2,2,1)*strn(m,l,2,2,1)))
      &         +c13*ekk*ekk/2.d0
-     &         +HeavisideJ1*(p*ekk*(1.d0-biot(m))-0.5d0*p*p/(Cphi*e0))
 
           dHds(m,l,1,1)=0.d0
           dHds(m,l,2,2)=0.d0
@@ -3459,13 +3522,11 @@
           if (test.gt.Hpsi0(m,l).or.1.eq.1) then
             Hpsi(m,l)=test
             dHds(m,l,1,1)=(c13*ekk+2.d0*c44*strn(m,l,1,1,1))*dfactor
-     &                    +(HeavisideJ1*p*(1.d0-biot(m)))*dfactor
             dHds(m,l,2,2)=(c13*ekk+2.d0*c44*strn(m,l,2,2,1))*dfactor
-     &                    +(HeavisideJ1*p*(1.d0-biot(m)))*dfactor
             dHds(m,l,1,2)=(c44*strn(m,l,1,2,1)
      &                    +c44*strn(m,l,2,1,1))*dfactor
             dHds(m,l,2,1)=dHds(m,l,1,2)
-            dHdp(m,l)=HeavisideJ1*((1.d0-biot(m))*ekk-p/(Cphi*e0))
+            dHdp(m,l)=0.d0
           endif
 
           else
@@ -3474,7 +3535,6 @@
      &              (strnplus(1,1)*strnplus(1,1))+
      &              (strnplus(2,2)*strnplus(2,2)))
      &         +c13*ekkplus*ekkplus/2.d0
-     &         +HeavisideJ1*(p*ekk*(1.d0-biot(m))-0.5d0*p*p/(Cphi*e0))
 
           dHds(m,l,1,1)=0.d0
           dHds(m,l,2,2)=0.d0
@@ -3485,19 +3545,16 @@
           if (test.gt.Hpsi0(m,l).or.1.eq.1) then
             Hpsi(m,l)=test
             dHds(m,l,1,1)=(c13*ekkplus+2.d0*c44*strnplus(1,1))*dfactor
-     &                    +(HeavisideJ1*p*(1.d0-biot(m)))*dfactor
             dHds(m,l,2,2)=(c13*ekkplus+2.d0*c44*strnplus(2,2))*dfactor
-     &                    +(HeavisideJ1*p*(1.d0-biot(m)))*dfactor
             dHds(m,l,1,2)=(c44*strnplus(1,2)+c44*strnplus(2,1))*dfactor
             dHds(m,l,2,1)=dHds(m,l,1,2)
-            dHdp(m,l)=HeavisideJ1*((1.d0-biot(m))*ekk-p/(Cphi*e0))
+            dHdp(m,l)=0.d0
           endif
 
           endif
 
           psimu(m,l)=-0.5d0*(1.d0-mu)+dfactor*(Hpsi(m,l))
-!     &               -(p*ekk*HeavisideJ1*(1.d0-biot(m))
-!     &                 -0.5d0*HeavisideJ1*p*p/(Cphi*e0))*DphiF(1)
+     &       -(max(p,0.d0)*ekk*(1.d0-biot(m))-0.5d0*p*p*Cphi)*DphiF(1)
 
           do 250 i=1,ndim
  250        ksi(m,l,i)=2.d0*gradmu(m,l,i)
@@ -3515,8 +3572,6 @@
 
  200    continue
  100  continue
-
-      print*,H_total
 
       return
       end
@@ -3687,12 +3742,12 @@
      &            nudofs,nudbcs,muint,Jacob,Finv,Imperm,w0,
      &            gradv,pint,tau,PetA,e0,dstrn,bsf,vint,strn,
      &            Hpsi,dJacob,dphi,phi,beta,a0,isu,isvp,ismu,
-     &            PetR,PetdU,ksp,nodes,indices,gradp,dHdp,
+     &            PetR,PetdU,ksp,nodes,indices,gradp,dHdp,avgJ,
      &            visc_eff,dHds,local_eles,p0,Cf,fluidsource,
      &            biot,phi0,freestrain,YM,poisson,KDtN,maxbdnd,
      &            DtNdofs,DtNidx,tc_split_on,muavg,open_thresh,
      &            kperm,rank,eleproc,ndpn,artstiff,dmuint,timerule,
-     &            gmuint,stretch,g_ele,maxprocs)
+     &            gmuint,stretch,g_ele,maxprocs,darcy_exp)
       implicit none
 #include <petsc/finclude/petsc.h>
 
@@ -3719,9 +3774,10 @@
       real*8 visc_eff(maxele,nints),dHds(maxele,nints,ndim,ndim)
       real*8 freestrain(maxele),YM(maxele)
       real*8 poisson(maxele),p0,Cf,fluidsource(maxele)
-      real*8 muavg(maxele),open_thresh,kperm
+      real*8 muavg(maxele),open_thresh,kperm,avgJ(maxele,2)
       real*8 dmuint(maxele,nints),timerule,dHdp(maxele,nints)
       real*8 gmuint(maxele,nints,ndim),stretch(maxele,nints)
+      real*8 darcy_exp(2)
       integer maxele,maxnd,maxcon,maxdbc,local_eles,maxbdnd,ndpn
       integer ele(maxele*maxprocs,nnds),gcon(maxnd,ndpn)
       integer i,j,k,l,n,nvpdofs,nvpdbcs,nudofs,nudbcs
@@ -3777,7 +3833,7 @@
      &                biot,phi0,freestrain,YM,p0,Cf,dHdp,
      &                poisson,tc_split_on,muavg,open_thresh,
      &                kperm,artstiff,dmuint,timerule,gmuint,
-     &                stretch,fluidsource)
+     &                stretch,fluidsource,avgJ,darcy_exp)
 
         do 130 i=1,nnds*(2*ndim+2)
           do 140 j=1,nnds*(2*ndim+2)
@@ -3825,56 +3881,55 @@
               nci=mpcnum(coni)
               do 150 ii=1,nci
                 dofi=gcon(mpc(coni,ii,1),mpc(coni,ii,2))
-                if (dofi.gt.ndofs) goto 150
-                if(conj.gt.0) then
-                  ncj=mpcnum(conj)              
-                  do 155 jj=1,ncj
-                    dofj=gcon(mpc(conj,jj,1),
-     &                          mpc(conj,jj,2))
-                    if (dofj.gt.ndofs) goto 155
+                if (dofi.le.ndofs) then
+                  if(conj.gt.0) then
+                    ncj=mpcnum(conj)              
+                    do 155 jj=1,ncj
+                      dofj=gcon(mpc(conj,jj,1),
+     &                            mpc(conj,jj,2))
+                      if (dofj.le.ndofs) then
 
-                    Petkele(Petj+jj,Peti+ii)=kele(i,j)
-     &                              *conA(coni,ii)*conA(conj,jj)
+                        Petkele(Petj+jj,Peti+ii)=kele(i,j)
+     &                                *conA(coni,ii)*conA(conj,jj)
+     &                                *dble(isdof)
+
+                        if (Peti+ii.eq.Petj+jj) then
+                          idx(Peti+ii)=dofi-1
+                        endif
+                      endif
+
+ 155                continue
+                  else
+                    if (dofj.le.ndofs)
+     &                Petkele(Petj,Peti+ii)=kele(i,j)*conA(coni,ii)
      &                *dble(isdof)
 
-                    if (Peti+ii.eq.Petj+jj) then
-                      idx(Peti+ii)=dofi-1
-                    endif
-
- 155              continue
-                else
-                  if (dofj.gt.ndofs) goto 150
-
-                  Petkele(Petj,Peti+ii)=kele(i,j)*conA(coni,ii)
-     &              *dble(isdof)
-
+                  endif
                 endif
  150          continue
             elseif(conj.gt.0) then
-              if (dofi.gt.ndofs) goto 140
-              ncj=mpcnum(conj)
-              do 160 jj=1,ncj
-                dofj=gcon(mpc(conj,jj,1),mpc(conj,jj,2))
-                if (dofj.gt.ndofs) goto 160
+              if (dofi.le.ndofs) then
+                ncj=mpcnum(conj)
+                do 160 jj=1,ncj
+                  dofj=gcon(mpc(conj,jj,1),mpc(conj,jj,2))
+                  if (dofj.le.ndofs)
+     &              Petkele(Petj+jj,Peti)=kele(i,j)*conA(conj,jj)
+     &              *dble(isdof)
 
-                Petkele(Petj+jj,Peti)=kele(i,j)*conA(conj,jj)
+ 160            continue
+              endif
+            else
+              if (dofi.le.ndofs.and.dofj.le.ndofs) then
+
+                Petkele(Petj,Peti)=kele(i,j)
      &            *dble(isdof)
 
- 160          continue
-            else
-              if (dofi.gt.ndofs) goto 140
-              if (dofj.gt.ndofs) goto 140
-
-
-              Petkele(Petj,Peti)=kele(i,j)
-     &          *dble(isdof)
-
-              if (Peti.eq.Petj) then
-                idx(Peti)=dofi-1
-                Petkele(Petj,Peti)=Petkele(Petj,Peti)
-     &                            +dble(1-isdof)
+                if (Peti.eq.Petj) then
+                  idx(Peti)=dofi-1
+                  Petkele(Petj,Peti)=Petkele(Petj,Peti)
+     &                              +dble(1-isdof)
+                endif
               endif
-
             endif
  140      continue
  130    continue
@@ -3950,7 +4005,7 @@
      &                biot,phi0,freestrain,YM,p0,Cf,dHdp,
      &                poisson,tc_split_on,muavg,open_thresh,
      &                kperm,artstiff,dmuint,timerule,gmuint,
-     &                stretch,fluidsource)
+     &                stretch,fluidsource,avgJ,darcy_exp)
       implicit none
       real*8 kele(nnds*(2*ndim+2),nnds*(2*ndim+2))
       real*8 detele(nints),bele(nnds,nints,ndim)
@@ -3960,7 +4015,7 @@
       real*8 biot(maxele),ebiot,dHdp(maxele,nints)
       real*8 freestrain(maxele),estrn0
       real*8 Jacob(maxele,nints,2),eJac
-      real*8 ebsf(ndim),phi0(maxele)
+      real*8 ebsf(ndim),phi0(maxele),avgJ(maxele,2),eavgJ1,eavgJ2
       real*8 pint(maxele,nints,2),ep,bsf(maxele,nints,ndim),ephi0
       real*8 Finv(maxele,nints,ndim,ndim,2),eFinv(ndim,ndim)
       real*8 visc_eff(maxele,nints),evisc_eff,eopen,eopena
@@ -3985,6 +4040,7 @@
       real*8 pBNp(ndim),vNNp(ndim),edHdp
       real*8 muavg(maxele),emuavg,open_thresh,eimperm(ndim,ndim)
       real*8 ephi_old,eJac_old,emu_old,timerule,einject
+      real*8 darcy_exp(2)
       integer maxele,nints,nnds,ndim,g_ele(maxele),maxprocs
       integer iele,i,ia,k,l,i1,j1,j,Peti,Petj
       logical tc_split_on,artstiff
@@ -4007,6 +4063,8 @@
         eJac=Jacob(iele,ia,1)
         eJac_old=Jacob(iele,ia,2)
         edJac=dJacob(iele,ia)
+        eavgJ1=avgJ(iele,1)
+        eavgJ2=avgJ(iele,2)
         ep=pint(iele,ia,1)
         ep_old=pint(iele,ia,2)
         eHpsi=Hpsi(iele,ia)
@@ -4048,7 +4106,7 @@
      &           pNNp,pBNp,vNNp,a0,estrn0,eYM,epoisson,tc_split_on,
      &           emuavg,open_thresh,kperm,artstiff,edmu,ephi_old,
      &           eJac_old,emu_old,w0,timerule,egmu,estretch,egradp,
-     &           edHdp)
+     &           edHdp,eavgJ1,eavgJ2,darcy_exp)
      
         do 220 i1=1,nnds
           do 230 j1=1,nnds
@@ -4210,7 +4268,8 @@
      &               pBNv,oNNv,oNBv,oNBu,oBBo,uBNo,oNNo,pNNo,oNNp,pNNp,
      &               pBNp,vNNp,a,strn0,YM,poisson,tc_split_on,muavg,
      &               open_thresh,kperm,artstiff,dmu,phi_old,Jac_old,
-     &               mu_old,w0,timerule,gmu,stretch,gradp,dHdp)
+     &               mu_old,w0,timerule,gmu,stretch,gradp,dHdp,avgJ1,
+     &               avgJ2,darcy_exp)
       implicit none
       real*8 Cstiff(4),w0,imperm(ndim,ndim),mu,p,tau(ndim,ndim)
       real*8 Jac,dJac,c11,c33,c13,c44,bf(ndim),gradv(ndim,ndim)
@@ -4242,6 +4301,8 @@
       real*8 crit_strain,HeavisideJ1,HeavisideJ2,dHJ1,istr
       real*8 stretch,vscale_factor,dstretchdF(ndim,ndim),gmu(ndim)
       real*8 s_numerator,s_denominator,crit_stretch,fdensity(2)
+      real*8 avgJ1,avgJ2,mHeavisideJ1,dphiJdJ,dphiJdmu,dphiJdp
+      real*8 dfdensedp,darcy_exp(2)
       integer i,j,k,l,m,n,ndim,q
       logical tc_split_on,no_tc_split,artstiff
 
@@ -4263,14 +4324,8 @@
       c44=YM
      &    /(2.d0*(1.d0+poisson))
 
-      if (dabs(biot-1.d0).lt.1.d-15) then
-        Cphi=1.d20
-      elseif (dabs(biot-phi0).lt.1.d-15) then
-        Cphi=1.d20
-      else 
-        Cphi=(YM/(e0*3.d0*(1.d0-2.d0*poisson)))
-     &       /((biot-phi0)*(1.d0-biot))
-      endif
+      Cphi=(biot-phi0)*(1.d0-biot)*(3.d0*(1.d0-2.d0*poisson))
+     &     /(YM)
 
       h0=open_thresh
 
@@ -4287,34 +4342,6 @@
 
 !      if (factor.lt.1.d-4.and.artstiff) factor=1.d-2
 
-!      aexp=1.d0
-!      bexp=2.d0
-!      phiF(1)=(1.d0-mu**aexp)**bexp
-!      phiF(2)=(1.d0-mu_old**aexp)**bexp
-!
-!      DphiF(1)=-aexp*bexp*(mu**(aexp-1.d0))
-!     &     *(1.d0-mu**aexp)**(bexp-1.d0)
-!      DphiF(2)=-aexp*bexp*(mu_old**(aexp-1.d0))
-!     &     *(1.d0-mu_old**aexp)**(bexp-1.d0)
-!
-!      if (aexp.lt.1.1d0.and.bexp.lt.1.1d0) then
-!        DDphiF(1)=0.d0
-!        DDphiF(2)=0.d0
-!      elseif (aexp.lt.1.1d0) then
-!        DDphiF(1)=(bexp-1.d0)*bexp*(1.d0-mu)**(bexp-2.d0)
-!        DDphiF(2)=(bexp-1.d0)*bexp*(1.d0-mu_old)**(bexp-2.d0)
-!      elseif (bexp.lt.1.1d0) then
-!        DDphiF(1)=-(aexp-1.d0)*aexp*mu**(aexp-2.d0)
-!        DDphiF(2)=-(aexp-1.d0)*aexp*mu_old**(aexp-2.d0)
-!      else
-!        DDphiF(1)=aexp*bexp*mu**(aexp-2.d0)
-!     &      *(1.d0-mu**aexp)**(bexp-2.d0)
-!     &      *(1.d0-mu**aexp-aexp*(1.d0-bexp*mu**aexp))
-!        DDphiF(2)=aexp*bexp*mu_old**(aexp-2.d0)
-!     &      *(1.d0-mu_old**aexp)**(bexp-2.d0)
-!     &      *(1.d0-mu_old**aexp-aexp*(1.d0-bexp*mu_old**aexp))
-!      endif
-
       phiF(1)=1.d0-3.d0*mu**2.d0+2.d0*mu**3.d0
       phiF(2)=1.d0-3.d0*mu_old**2.d0+2.d0*mu_old**3.d0
       DphiF(1)=-6.d0*mu*(1.d0-mu)
@@ -4322,8 +4349,8 @@
       DDphiF(1)=-6.d0+12.d0*mu
       DDphiF(2)=-6.d0+12.d0*mu_old
 
-      aexp=4.d0
-      bexp=4.d0
+      aexp=darcy_exp(1)
+      bexp=darcy_exp(2)
       darcyF=(1.d0-muavg**aexp)**bexp+0.d-6
       DdarcyF=-aexp*bexp*(muavg**(aexp-1.d0))
      &       *(1.d0-muavg**aexp)**(bexp-1.d0)
@@ -4354,45 +4381,19 @@
      &     *dsqrt((1.d0+poisson)*(1.d0-2.d0*poisson)/3.d0)
       istr=-crit_strain*0.5d0
 
-      if (Jac-(1.d0+istr).lt.0.d0) then
-        HeavisideJ1=0.d0
-        dHJ1=0.d0
-      elseif (Jac-(1.d0+istr).ge.crit_strain) then
-        HeavisideJ1=1.d0
-        dHJ1=0.d0
-      else
-        HeavisideJ1=
-     &  (3.d0/((crit_strain)**2.d0))
-     &         *(Jac-(1.d0+istr))**2.d0
-     & -(2.d0/((crit_strain)**3.d0))
-     &         *(Jac-(1.d0+istr))**3.d0
-        dHJ1=-6.d0*(Jac-(1.d0+istr))*(Jac-(1.d0+istr)-crit_strain)
-     &        /((crit_strain)**3.d0)
-        dHJ1=0.d0
-      endif
-
-      if (Jac_old-(1.d0+istr).lt.0.d0) then
-        HeavisideJ2=0.d0
-      elseif (Jac_old-(1.d0+istr).ge.crit_strain) then
-        HeavisideJ2=1.d0
-      else
-        HeavisideJ2=
-     &  (3.d0/((crit_strain)**2.d0))
-     &         *(Jac_old-(1.d0+istr))**2.d0
-     & -(2.d0/((crit_strain)**3.d0))
-     &         *(Jac_old-(1.d0+istr))**3.d0
-      endif
-
       dHJ1=0.d0
-      if (Jac.ge.1.d0) then
+      if (avgJ1.ge.1.d0) then
         HeavisideJ1=1.d0
+        mHeavisideJ1=1.d0
+        if (p.lt.0.d0) HeavisideJ1=0.d0
       else
         HeavisideJ1=1.d0
         if (tc_split_on) HeavisideJ1=0.d0
+        mHeavisideJ1=0.d0
         if (einject.gt.1.d-6) HeavisideJ1=1.d0
       endif
 
-      if (Jac_old.ge.1.d0) then
+      if (avgJ2.ge.1.d0) then
         HeavisideJ2=1.d0
       else
         HeavisideJ2=1.d0
@@ -4424,6 +4425,7 @@
       else
         vscale_factor=0.d0
       endif
+!        vscale_factor=0.d0
 
       s_numerator=0.d0
       s_denominator=0.d0
@@ -4459,67 +4461,87 @@
 
       phicrack=1.d0
       phieff(1)=phi+phiF(1)*(1.d0-phi)
-     &                *((Jac-1.d0)*HeavisideJ1)/Jac
+     &                *((Jac-1.d0)*mHeavisideJ1)/Jac
       phieff(2)=phi_old+phiF(2)*(1.d0-phi_old)
      &                *((Jac_old-1.d0)*HeavisideJ2)/Jac_old
 
+      dphiJdJ=biot+(1.d0-biot)*phiF(1)
+      dphiJdp=(1.d0-phiF(1))*Cphi*e0
+      dphiJdmu=DphiF(1)*((1.d0-biot)*(Jac-1.d0)-(p-p0)*Cphi*e0)
+      if (phi.lt.1.d-15) then
+        dphiJdJ=0.d0
+        dphiJdp=0.d0
+        dphiJdmu=0.d0
+      endif
+
       fdensity(1)=1.d0+Cf*p
       fdensity(2)=1.d0+Cf*p_old
+!      if (p.lt.0.d0) fdensity(1)=exp(Cf*p-1.d0*p*p)
+!      if (p_old.lt.0.d0) fdensity(2)=exp(Cf*p_old-1.d0*p_old**2.d0)
 
-      dphibdmu=-DphiF(1)*(biot*(Jac-1.d0)+(p-p0)/Cphi)*HeavisideJ1
-     &          /((Jac-phiF(1)*(Jac-1.d0)*HeavisideJ1)**2.d0)
-      dphibdp=(1.d0-phiF(1)*HeavisideJ1)
-     &        /(Cphi*(Jac-(Jac-1.d0)*phiF(1)*HeavisideJ1))
+      dfdensedp=Cf
+!      if (p.lt.0.d0) dfdensedp=fdensity(1)*(Cf-1.d0*2.d0*p)
+
+      dphibdmu=-DphiF(1)*(biot*(Jac-1.d0)+(p-p0)*Cphi*e0)*mHeavisideJ1
+     &          /((Jac-phiF(1)*(Jac-1.d0)*mHeavisideJ1)**2.d0)
+      dphibdp=(1.d0-phiF(1)*mHeavisideJ1)*Cphi*e0
+     &        /(Jac-(Jac-1.d0)*phiF(1)*mHeavisideJ1)
       dphibdJ=-phi0/(Jac**2.d0)
-     &        +(biot-(phi-phi0/Jac))*(1.d0-phiF(1)*HeavisideJ1)
-     &                    /(Jac-(Jac-1.d0)*phiF(1)*HeavisideJ1)
+     &        +(biot-(phi-phi0/Jac))*(1.d0-phiF(1)*mHeavisideJ1)
+     &                    /(Jac-(Jac-1.d0)*phiF(1)*mHeavisideJ1)
 
-      if (dabs(1.d0-phiF(1)*HeavisideJ1).gt.1.d-15)
-     &  dphibdJ=dphibdJ+phi*dHJ1/(1.d0-phiF(1)*HeavisideJ1)
+      if (dabs(1.d0-phiF(1)*mHeavisideJ1).gt.1.d-15)
+     &  dphibdJ=dphibdJ+phi*dHJ1/(1.d0-phiF(1)*mHeavisideJ1)
 
-      dphieffdmu=dphibdmu+(Jac-1.d0)*HeavisideJ1
+      dphieffdmu=dphibdmu+(Jac-1.d0)*mHeavisideJ1
      &               *((1.d0-phi)*DphiF(1)-phiF(1)*dphibdmu)/Jac
       dphieffdJ=dphibdJ+phiF(1)*
-     &             ((HeavisideJ1+(Jac-1.d0)*dHJ1)*(1.d0-phi)/Jac
-     &                      -(Jac-1.d0)*HeavisideJ1*dphibdJ)/Jac
-      dphieffdp=(1.d0-phiF(1)*(Jac-1.d0)*HeavisideJ1/Jac)*dphibdp
+     &             ((mHeavisideJ1+(Jac-1.d0)*dHJ1)*(1.d0-phi)/Jac
+     &                      -(Jac-1.d0)*mHeavisideJ1*dphibdJ)/Jac
+      dphieffdp=(1.d0-phiF(1)*(Jac-1.d0)*mHeavisideJ1/Jac)*dphibdp
 
       do 100 i=1,ndim
        dbsfdmu(i)=0.d0
        do 101 j=1,ndim
         dbsfdmu(i)=dbsfdmu(i)+DdarcyF*imperm(i,j)*v(j)*kperm
+!        dbsfdmu(i)=dbsfdmu(i)
+!     &             -imperm(i,j)*v(j)*(kperm**muavg)*dlog(kperm)
         dbsfdv(i,j)=0.d0
-        dstrsdp(i,j)=-((1.d0-phiF(1)*HeavisideJ1)*biot
-     &                      +phiF(1)*HeavisideJ1)*delta(i,j)
-        dtaudmu(i,j)=-2.d0*(1.d0-mu)*visc_eff*(vbar(i,j)+vbar(j,i))
+        dstrsdp(i,j)=-(biot+(1.d0-biot)*phiF(1))*delta(i,j)
+        if (p.lt.0.d0) dstrsdp(i,j)=0.d0
+        dtaudmu(i,j)=-2.d0*(1.d0-mu)*visc_eff*(vbar(i,j)+vbar(j,i))*1.d0
         do 102 k=1,ndim
          dbsfdv(i,j)=dbsfdv(i,j)
-     &               -(1.d0-darcyF)*imperm(i,k)*delta(k,j)*kperm
+     &    -(1.d0-1.d0*darcyF)*imperm(i,k)*delta(k,j)*(kperm)!**muavg-1.d0)
          do 103 l=1,ndim
           dJFdu(i,j,k,l)=e0*Jac*Finv(l,k)*Finv(i,j)
      &                  -e0*Jac*Finv(i,k)*Finv(l,j)
-          dtaudv(i,j,k,l)=(1.d0-mu)**2.d0*visc_eff
+          dtaudv(i,j,k,l)=(1.d0-1.d0*mu)**2.d0*visc_eff
      &                            *(delta(i,k)*delta(j,l)+
      &                              delta(j,k)*delta(i,l)-
      &                    2.d0/3.d0*delta(i,j)*delta(k,l))
-          dtaudu(i,j,k,l)=(1.d0-mu)**2.d0*visc_eff*e0/dt
+          dtaudu(i,j,k,l)=(1.d0-1.d0*mu)**2.d0*visc_eff*e0/dt
      &                            *(delta(i,k)*Finv(l,j)+
      &                              delta(j,k)*Finv(l,i)-
      &                    2.d0/3.d0*delta(i,j)*Finv(l,k))/w0
+!         IF using J to scale....
+          dtaudu(i,j,k,l)=dtaudu(i,j,k,l)+(tau(i,j)+p*delta(i,j))*
+     &                      vscale_factor*dstretchdJ*dJdu(k,l)
           do 104 m=1,ndim
-           dtaudu(i,j,k,l)=dtaudu(i,j,k,l)-(1.d0-mu)**2.d0*e0*visc_eff*
+           dtaudu(i,j,k,l)=dtaudu(i,j,k,l)
+     &         -(1.d0-1.d0*mu)**2.d0*e0*visc_eff*
      &         ((gradv(i,m)+e0*dstrn(i,m)/w0)*Finv(m,k)*Finv(l,j)
      &         +(gradv(j,m)+e0*dstrn(j,m)/w0)*Finv(m,k)*Finv(l,i))
            do 105 n=1,ndim
-            dtaudu(i,j,k,l)=dtaudu(i,j,k,l)+(1.d0-mu)**2.d0*e0*visc_eff*
+            dtaudu(i,j,k,l)=dtaudu(i,j,k,l)
+     &        +(1.d0-1.d0*mu)**2.d0*e0*visc_eff*
      &        2.d0/3.d0*delta(j,i)*(gradv(m,n)+e0*dstrn(m,n)/w0)
      &        *Finv(n,k)*Finv(l,m)
 
+!           IF using Finv to scale... 
 !            dtaudu(i,j,k,l)=dtaudu(i,j,k,l)+(tau(i,j)+p*delta(i,j))*
 !     &                      vscale_factor*dstretchdF(m,n)*dFdu(m,n,k,l)
 
-            dtaudu(i,j,k,l)=dtaudu(i,j,k,l)+(tau(i,j)+p*delta(i,j))*
-     &                      vscale_factor*dstretchdJ*dJdu(k,l)
  105       continue
  104      continue
  103     continue
@@ -4527,7 +4549,7 @@
  101   continue
  100  continue
 
-      phiterm=-(1.d0-biot)*phiF(1)*p
+      phiterm=0.d0
 
       if (dabs(strn(1,2)+strn(2,1)).lt.1.d-14) then
         if (strn(1,1).ge.strn(2,2)) then
@@ -4586,12 +4608,12 @@
 
       no_tc_split=.not.tc_split_on
       if (etotal(2).ge.0.d0.or.no_tc_split) then
-        dstrsdstrn(1,1,1,1)=c11*factor+phiterm*dHJ1*dJdu(1,1)
-        dstrsdstrn(1,1,2,2)=c13*factor+phiterm*dHJ1*dJdu(2,2)
+        dstrsdstrn(1,1,1,1)=c11*factor+phiterm
+        dstrsdstrn(1,1,2,2)=c13*factor+phiterm
         dstrsdstrn(1,1,1,2)=0.d0
         dstrsdstrn(1,1,2,1)=0.d0
         dstrsdstrn(2,2,1,1)=dstrsdstrn(1,1,2,2)
-        dstrsdstrn(2,2,2,2)=c33*factor+phiterm*dHJ1*dJdu(2,2)
+        dstrsdstrn(2,2,2,2)=c33*factor+phiterm
         dstrsdstrn(2,2,1,2)=0.d0
         dstrsdstrn(2,2,2,1)=0.d0
         dstrsdstrn(1,2,1,1)=0.d0
@@ -4603,12 +4625,12 @@
         dstrsdstrn(2,1,1,2)=dstrsdstrn(1,2,1,2)
         dstrsdstrn(2,1,2,1)=dstrsdstrn(1,2,2,1)
       elseif (etotal(1).lt.-1.d-13) then
-        dstrsdstrn(1,1,1,1)=c11+phiterm*dHJ1*dJdu(1,1)
-        dstrsdstrn(1,1,2,2)=c13+phiterm*dHJ1*dJdu(2,2)
+        dstrsdstrn(1,1,1,1)=c11+phiterm
+        dstrsdstrn(1,1,2,2)=c13+phiterm
         dstrsdstrn(1,1,1,2)=0.d0
         dstrsdstrn(1,1,2,1)=0.d0
         dstrsdstrn(2,2,1,1)=dstrsdstrn(1,1,2,2)
-        dstrsdstrn(2,2,2,2)=c33+phiterm*dHJ1*dJdu(2,2)
+        dstrsdstrn(2,2,2,2)=c33+phiterm
         dstrsdstrn(2,2,1,2)=0.d0
         dstrsdstrn(2,2,2,1)=0.d0
         dstrsdstrn(1,2,1,1)=0.d0
@@ -4638,7 +4660,7 @@
      &       +(strn(2,2)-strn0)*(z**2.d0)
      &       -(strn(1,1)-strn0)*((strn(2,2)-strn0)**2.d0)
      &       +(strn(2,2)-strn0)**3.d0)/(4.d0*z**3.d0)))
-     &    +phiterm*dHJ1*dJdu(1,1)
+     &    +phiterm
 
         dstrsdstrn(1,2,1,1)=factor*
      &    (2.d0*c44*
@@ -4659,7 +4681,7 @@
      &    (c13*dkkminus+2.d0*c44*
      &     (((strn(1,2)+strn(2,1))**2.d0
      &      *(strn(1,1)+strn(2,2)-2.d0*strn0))/(4.d0*z**3.d0)))
-     &    +phiterm*dHJ1*dJdu(1,1)
+     &    +phiterm
 
         dstrsdstrn(1,1,1,2)=dstrsdstrn(1,2,1,1)
 
@@ -4710,7 +4732,7 @@
      &       -3.d0*(strn(2,2)-strn0)*(z**2.d0)
      &       -(strn(1,1)-strn0)*((strn(2,2)-strn0)**2.d0)
      &       +(strn(2,2)-strn0)**3.d0)/(4.d0*z**3.d0)))
-     &    +phiterm*dHJ1*dJdu(2,2)
+     &    +phiterm
 
       endif
 
@@ -4718,18 +4740,18 @@
       if (.not.tc_split_on) then
 
       dstrsdmu(1,1)=(c13*ekk+2.d0*c44*strn(1,1))*dfactor
-     &              -p*(-DphiF(1)*biot+DphiF(1))*HeavisideJ1
+     &              -max(p,0.d0)*(-DphiF(1)*biot+DphiF(1))
       dstrsdmu(2,2)=(c13*ekk+2.d0*c44*strn(2,2))*dfactor
-     &              -p*(-DphiF(1)*biot+DphiF(1))*HeavisideJ1
+     &              -max(p,0.d0)*(-DphiF(1)*biot+DphiF(1))
       dstrsdmu(1,2)=(c44*strn(1,2)+c44*strn(2,1))*dfactor
       dstrsdmu(2,1)=dstrsdmu(1,2)
 
       else
 
       dstrsdmu(1,1)=(c13*ekkplus+2.d0*c44*strnplus(1,1))*dfactor
-     &              -p*(-DphiF(1)*biot+DphiF(1))*HeavisideJ1
+     &              -max(p,0.d0)*(-DphiF(1)*biot+DphiF(1))
       dstrsdmu(2,2)=(c13*ekkplus+2.d0*c44*strnplus(2,2))*dfactor
-     &              -p*(-DphiF(1)*biot+DphiF(1))*HeavisideJ1
+     &              -max(p,0.d0)*(-DphiF(1)*biot+DphiF(1))
       dstrsdmu(1,2)=(c44*strnplus(1,2)+c44*strnplus(2,1))*dfactor
       dstrsdmu(2,1)=dstrsdmu(1,2)
 
@@ -4739,15 +4761,13 @@
       if (artstiff) beta2=0.d0
           
       oNNo=0.5d0+ddfactor*Hpsi+(beta2+beta)/dt
-!     &       -(ekk*HeavisideJ1*p*(1.d0-biot)
-!     &       -0.5d0*HeavisideJ1*p*p/(Cphi*e0))*DDphiF(1)
-      pNNo=dHdp
-!              -(ekk*HeavisideJ1*(1.d0-biot)
-!     &        -HeavisideJ1*p/(Cphi*e0))*DphiF(1)
-      oNNp=-dphieffdmu*Jac/(dt*w0)
-      pNNp=-dphieffdp*Jac/(dt*w0)
-     &     -phieff(2)*Jac_old*fdensity(2)*Cf
-     &      /((fdensity(1)**2.d0)*w0*dt)
+     &     -(ekk*max(p,0.d0)*(1.d0-biot)-0.5d0*p*p*Cphi)*DDphiF(1)
+      pNNo=dHdp-(ekk*(1.d0-biot)-p*Cphi)*DphiF(1)
+      if (p.lt.0.d0) pNNo=pNNo+ekk*(1.d0-biot)*DphiF(1)
+      oNNp=-dphiJdmu/(dt*w0)
+      pNNp=-dphiJdp/(dt*w0)
+!     &     -phi_old*Jac_old*fdensity(2)*dfdensedp
+!     &      /((fdensity(1)**2.d0)*w0*dt)
       do 110 i=1,ndim
        oNNv(i)=-Jac*dbsfdmu(i)*timerule
        pBNp(i)=0.d0
@@ -4758,15 +4778,17 @@
         vNNv(i,j)=-Jac*dbsfdv(j,i)*timerule
         pNBu(i,j)=dstrsdp(j,i)
         vBNp(i,j)=-Jac*Finv(j,i)*timerule
-        pBNp(i)=pBNp(i)-Cf*v(j)*Finv(i,j)*Jac/fdensity(1)
-        vNNp(i)=vNNp(i)-Cf*gradp(j)*Finv(j,i)*Jac/fdensity(1)
-        pNNp=pNNp+Cf*Cf*gradp(J)*v(i)*Finv(J,i)*Jac
-     &            /(fdensity(1)**2.d0)
-        uBNp(i,j)=-dJdu(j,i)*(dphieffdJ*Jac+phieff(1))/(dt*w0)
+        pBNp(i)=pBNp(i)
+     &          -dfdensedp*v(j)*Finv(i,j)*Jac/(0.d0*fdensity(1)+1.d0)
+        vNNp(i)=vNNp(i)
+     &      -dfdensedp*gradp(j)*Finv(j,i)*Jac/(0.d0*fdensity(1)+1.d0)
+        pNNp=pNNp
+!     &           +dfdensedp*dfdensedp*gradp(J)*v(i)*Finv(J,i)*Jac
+!     &            /(fdensity(1)**2.d0)
+        uBNp(i,j)=-dJdu(j,i)*(dphiJdJ)/(dt*w0)
         oNBu(i,j)=dstrsdmu(j,i)
         uBNo(i,j)=dHds(j,i)
-!                           -p*DphiF(1)*(delta(i,j)*HeavisideJ1
-!     &                      +ekk*dHJ1*dJdu(i,j))*(1.d0-biot)
+     &            -max(p,0.d0)*DphiF(1)*delta(i,j)*(1.d0-biot)
         oBBo(i,j)=2.d0*delta(j,i)
         oNBv(i,j)=0.d0
         do 112 k=1,ndim
@@ -6019,3 +6041,4 @@
       end
       
 ********************************************************************
+
