@@ -4,25 +4,25 @@ e0:
 a0:
 -1.0E-06
 
-viscosity_(normalized_by_sigma_0/t_0):
+viscosity (normalized by sigma_0*t_0):
 6.0E-011
 
-kappa_(normalized_by_l_0^2):
+kappa (normalized by l_0^2):
 1.0E-019
 
-Cf_(normalized_by_rho^f_0):
+Cf (normalized by rho^f_0):
 0.00773
 
-Qrate_(m_tilde_from_dissertation):
+Qrate (m tilde from dissertation):
 0.001
 
-delta_t_(normalized_by_t_0):
+delta_t (normalized by t_0):
 60.0
 
 Darcy_exponents:
 6.0 1.0
 
-Opening_threshhold_(~2*e0):
+Opening_threshhold (~2*e0):
 0.0007
 
 
